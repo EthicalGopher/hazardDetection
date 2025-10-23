@@ -1,0 +1,21 @@
+syntax = "proto3";
+option go_package = "/hazard";
+package hazard;
+
+service HazardDetection {
+  // Single RPC for detecting hazards
+  rpc DetectHazard (ImageRequest) returns (DetectionResponse);
+}
+
+message ImageRequest {
+  bytes image_data = 1;      // Raw image bytes (JPEG/PNG)
+  double latitude = 2;       // Optional GPS
+  double longitude = 3;
+}
+
+message DetectionResponse {
+  string hazard_type = 1;
+  float confidence = 2;
+  int32 priority = 3;        // High=3, Medium=2, Low=1
+}
+

@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package hazard;
+
+// Service definition for hazard detection
+service HazardDetection {
+  // DetectHazard receives an image from the mobile device
+  // and returns hazard detection results.
+  rpc DetectHazard (ImageRequest) returns (DetectionResponse);
+}
+
+// Message sent from mobile to Go server with image data
+message ImageRequest {
+  bytes image_data = 1;      // Raw image bytes (JPEG/PNG)
+  double latitude = 2;       // GPS latitude (optional)
+  double longitude = 3;      // GPS longitude (optional)
+}
+
+// Response message from Go server with detection results
+message DetectionResponse {
+  string hazard_type = 1;    // e.g., "Pothole", "Debris"
+  float confidence = 2;      // Confidence score of detection (0.0 - 1.0)
+  int32 priority = 3;        // Priority level: High=3, Medium=2, Low=1
+}
+

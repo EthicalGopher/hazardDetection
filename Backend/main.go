@@ -16,8 +16,10 @@ import (
 	"net/http"
 
 	"github.com/improbable-eng/grpc-web/go/grpcweb"
+	"github.com/joho/godotenv"
 	"github.com/ollama/ollama/api"
 	"github.com/rs/cors"
+	"google.golang.org/genai"
 	"google.golang.org/grpc"
 )
 
@@ -25,14 +27,19 @@ type server struct {
 	pb.UnimplementedHazardDetectionServer
 }
 
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
 // DetectHazard receives image bytes and returns a dummy detection
 func (s *server) DetectHazard(ctx context.Context, req *pb.ImageRequest) (*pb.DetectionResponse, error) {
 	fmt.Printf("Received image of size: %d bytes\n", len(req.GetImageData()))
 	fmt.Printf("Location: %f, %f\n", req.GetLatitude(), req.GetLongitude())
-	resp, err := detectHazardWithOllama(ctx, req.GetImageData())
-	if err != nil {
-		return nil, err
-	}
+	serveFrames(req.GetImageData())
+	resp := hazardDetectionWithGemini()
 	fmt.Println("Response : ", resp)
 	return resp, nil
 }
@@ -56,18 +63,20 @@ func serveFrames(imgByte []byte) {
 	}
 
 }
-func detectHazardWithOllama(ctx context.Context, imgData []byte) (*pb.DetectionResponse, error) {
+func detectHazardWithOllama(ctx context.Context) (*pb.DetectionResponse, error) {
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-
+	imgData, err := os.ReadFile("./images/testing.jpg")
 	format := json.RawMessage(`"json"`)
+	prompt := "Analyse the image and identify the hazard, confidence score, and priority level. Return the response as a JSON object with the fields: hazard_type, confidence, and priority. hazard_type is in string , confidence is in float upto 0 to 100, priority is in int upto 1 to 3 (1 == low, 2 == medium,3==high"
+	//prompt := `what is in the image in ./images/img.jpeg,write in JSON with key hazard_type`
 	req := &api.GenerateRequest{
 		Model:  "llava",
-		Prompt: "Analyse the image and identify the hazard, confidence score, and priority level. Return the response as a JSON object with the fields: hazard_type, confidence, and priority. hazard_type is in string , confidence is in float upto 0 to 100, priority is in int upto 1 to 3 (1 == low, 2 == medium,3==high.If the image is not about road hazard then hazard_type should be empty or '' and confidence 100 ,priority 0",
-		Images: []api.ImageData{imgData},
+		Prompt: prompt,
 		Format: format,
+		Images: []api.ImageData{imgData},
 	}
 	var fullResponse string
 	resp := &pb.DetectionResponse{}
@@ -84,6 +93,7 @@ func detectHazardWithOllama(ctx context.Context, imgData []byte) (*pb.DetectionR
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println("Raw JSON from Ollama:", fullResponse)
 	if err := json.Unmarshal([]byte(fullResponse), &ollamaResp); err != nil {
 		return nil, err
 	}
@@ -94,6 +104,86 @@ func detectHazardWithOllama(ctx context.Context, imgData []byte) (*pb.DetectionR
 	}
 
 	return resp, nil
+}
+
+func hazardDetectionWithGemini() *pb.DetectionResponse {
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	prompt := `
+Analyze the given image and detect any visible road hazards such as potholes, speed breakers, animal crossings, fallen trees, debris, waterlogging, or damaged road sections.
+Return the result in JSON format with the following fields:
+
+hazard_type (string) — the detected type of road hazard (e.g., "pothole", "speed breaker", "animal crossing").
+
+confidence (float, 0–100) — model’s confidence level in the detection.
+
+priority (int, 1–3) — urgency level of the hazard, where
+
+1 = low,
+
+2 = medium,
+
+3 = high.
+
+Example Output:
+
+{
+"hazard_type": "pothole",
+"confidence": 92.7,
+"priority": 3
+}
+	`
+	config := &genai.GenerateContentConfig{
+		ResponseMIMEType: "application/json",
+		ResponseSchema: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"hazard_type": {Type: genai.TypeString},
+				"confidence":  {Type: genai.TypeNumber},
+				"priority":    {Type: genai.TypeInteger},
+			},
+			Required: []string{"hazard_type", "confidence", "priority"},
+		},
+	}
+	bytes, _ := os.ReadFile("./images/img.jpeg")
+
+	parts := []*genai.Part{
+		genai.NewPartFromBytes(bytes, "image/jpeg"),
+		genai.NewPartFromText(prompt),
+	}
+
+	contents := []*genai.Content{
+		genai.NewContentFromParts(parts, genai.RoleUser),
+	}
+
+	result, err := client.Models.GenerateContent(
+		ctx,
+		"gemini-2.5-flash",
+		contents,
+		config,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var geminiResp struct {
+		HazardType string  `json:"hazard_type"`
+		Confidence float32 `json:"confidence"`
+		Priority   int32   `json:"priority"`
+	}
+	jsonString := result.Candidates[0].Content.Parts[0].Text
+	err = json.Unmarshal([]byte(jsonString), &geminiResp)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return &pb.DetectionResponse{
+		HazardType: geminiResp.HazardType,
+		Confidence: geminiResp.Confidence,
+		Priority:   geminiResp.Priority,
+	}
 }
 
 func main() {

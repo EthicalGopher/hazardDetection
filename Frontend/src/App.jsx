@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { API_URL } from "./constants";
 import { GrpcWebClientBase } from "grpc-web";
 import { Request } from "grpc-web"; 
 import { HazardDetectionClient} from "../proto/hazardPackage/hazard.client"
@@ -57,15 +56,28 @@ export default function CameraSender() {
   useEffect(() => {
     async function startCamera() {
       setStatus("Connecting to camera...");
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          let stream;
+          try {
+            // Try to get the environment camera (back camera)
+            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } } });
+          } catch (envErr) {
+            console.warn("Environment camera not available, trying user camera:", envErr);
+            // Fallback to user camera (front camera)
+            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+          }
+
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+          setStatus("Camera connected");
+        } catch (err) {
+          console.error("Error accessing camera:", err);
+          setStatus(`Camera error: ${err.message}`);
         }
-        setStatus("Camera connected");
-      } catch (err) {
-        console.error("Error accessing camera:", err);
-        setStatus(`Camera error: ${err.message}`);
+      } else {
+        setStatus("Camera API not supported in this browser or context.");
       }
     }
     startCamera();

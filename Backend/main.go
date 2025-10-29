@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/jpeg"
 	"log"
 	"net"
 	"os"
@@ -23,8 +20,34 @@ import (
 	"google.golang.org/grpc"
 )
 
+var prompt = `
+Analyze the given image and detect any visible road hazards such as potholes, speed breakers, animal crossings, fallen trees, debris, waterlogging, or damaged road sections.
+Return the result in JSON format with the following fields:
+
+hazard_type (string) — the detected type of road hazard (e.g., "pothole", "speed breaker", "animal crossing").
+
+confidence (float, 0–100) — model’s confidence level in the detection.
+
+priority (int, 1–3) — urgency level of the hazard, where
+
+1 = low,
+
+2 = medium,
+
+3 = high.
+
+Example Output:
+
+{
+"hazard_type": "pothole",
+"confidence": 92.7,
+"priority": 3
+}
+`
+
 type server struct {
 	pb.UnimplementedHazardDetectionServer
+	ollamaClient *api.Client
 }
 
 func init() {
@@ -38,40 +61,18 @@ func init() {
 func (s *server) DetectHazard(ctx context.Context, req *pb.ImageRequest) (*pb.DetectionResponse, error) {
 	fmt.Printf("Received image of size: %d bytes\n", len(req.GetImageData()))
 	fmt.Printf("Location: %f, %f\n", req.GetLatitude(), req.GetLongitude())
-	serveFrames(req.GetImageData())
-	resp := hazardDetectionWithGemini()
+	//serveFrames(req.GetImageData())
+	//resp := hazardDetectionWithGemini()
+	resp, err := s.detectHazardWithOllama(ctx, req.GetImageData())
+	if err != nil {
+		log.Println(err)
+		return nil, err
+	}
 	fmt.Println("Response : ", resp)
 	return resp, nil
 }
-func serveFrames(imgByte []byte) {
-
-	img, _, err := image.Decode(bytes.NewReader(imgByte))
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	out, _ := os.Create("./images/img.jpeg")
-	defer out.Close()
-
-	var opts jpeg.Options
-	opts.Quality = 100
-
-	err = jpeg.Encode(out, img, &opts)
-	//jpeg.Encode(out, img, nil)
-	if err != nil {
-		log.Println(err)
-	}
-
-}
-func detectHazardWithOllama(ctx context.Context) (*pb.DetectionResponse, error) {
-	client, err := api.ClientFromEnvironment()
-	if err != nil {
-		return nil, err
-	}
-	imgData, err := os.ReadFile("./images/testing.jpg")
+func (s *server) detectHazardWithOllama(ctx context.Context, imgData []byte) (*pb.DetectionResponse, error) {
 	format := json.RawMessage(`"json"`)
-	prompt := "Analyse the image and identify the hazard, confidence score, and priority level. Return the response as a JSON object with the fields: hazard_type, confidence, and priority. hazard_type is in string , confidence is in float upto 0 to 100, priority is in int upto 1 to 3 (1 == low, 2 == medium,3==high"
-	//prompt := `what is in the image in ./images/img.jpeg,write in JSON with key hazard_type`
 	req := &api.GenerateRequest{
 		Model:  "llava",
 		Prompt: prompt,
@@ -86,7 +87,7 @@ func detectHazardWithOllama(ctx context.Context) (*pb.DetectionResponse, error) 
 		Confidence float32 `json:"confidence"`
 		Priority   int32   `json:"priority"`
 	}
-	err = client.Generate(ctx, req, func(res api.GenerateResponse) error {
+	err := s.ollamaClient.Generate(ctx, req, func(res api.GenerateResponse) error {
 		fullResponse += res.Response
 		return nil
 	})
@@ -112,30 +113,6 @@ func hazardDetectionWithGemini() *pb.DetectionResponse {
 	if err != nil {
 		log.Fatal(err)
 	}
-	prompt := `
-Analyze the given image and detect any visible road hazards such as potholes, speed breakers, animal crossings, fallen trees, debris, waterlogging, or damaged road sections.
-Return the result in JSON format with the following fields:
-
-hazard_type (string) — the detected type of road hazard (e.g., "pothole", "speed breaker", "animal crossing").
-
-confidence (float, 0–100) — model’s confidence level in the detection.
-
-priority (int, 1–3) — urgency level of the hazard, where
-
-1 = low,
-
-2 = medium,
-
-3 = high.
-
-Example Output:
-
-{
-"hazard_type": "pothole",
-"confidence": 92.7,
-"priority": 3
-}
-	`
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
 		ResponseSchema: &genai.Schema{
@@ -187,13 +164,17 @@ Example Output:
 }
 
 func main() {
+	ollamaClient, err := api.ClientFromEnvironment()
+	if err != nil {
+		log.Fatal("failed to create ollama client: %v", err)
+	}
 	port := ":8080"
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	grpcServer := grpc.NewServer()
-	pb.RegisterHazardDetectionServer(grpcServer, &server{})
+	pb.RegisterHazardDetectionServer(grpcServer, &server{ollamaClient: ollamaClient})
 
 	wrappedGrpc := grpcweb.WrapServer(grpcServer)
 

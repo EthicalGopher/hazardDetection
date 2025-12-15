@@ -58,7 +58,7 @@ hazardDetection/
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/EthicalGopher/hazard-detection.git
+    git clone https://github.com/EthicalGopher/hazardDetection.git
     cd hazard-detection
     ```
 
